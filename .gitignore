@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Trained model checkpoints (decide later: Git LFS / slim re-save / fetch separately)
+models/
