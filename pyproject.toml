@@ -8,12 +8,14 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "google>=3.0.0",
     "ipykernel>=7.4.0",
     "matplotlib>=3.11.2",
     "numpy>=2.4.6",
     "opencv-python>=5.0.0.93",
     "panda>=0.3.1",
     "pandas>=3.0.6",
+    "scikit-learn>=1.9.1",
     "tensorflow>=2.21.0",
 ]
 
