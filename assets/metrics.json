@@ -1,0 +1,67 @@
+{
+  "model": "best_mri_cnn_model.keras",
+  "test_size": 1054,
+  "accuracy": 0.9108159392789373,
+  "macro_f1": 0.9056027300149923,
+  "weighted_f1": 0.9090949349328087,
+  "params": 11169476,
+  "trainable_params": 11169476,
+  "classes": [
+    "glioma",
+    "meningioma",
+    "notumor",
+    "pituitary"
+  ],
+  "confusion_matrix": [
+    [
+      209,
+      32,
+      0,
+      2
+    ],
+    [
+      6,
+      192,
+      19,
+      30
+    ],
+    [
+      0,
+      1,
+      299,
+      0
+    ],
+    [
+      0,
+      3,
+      1,
+      260
+    ]
+  ],
+  "per_class": {
+    "glioma": {
+      "precision": 0.9720930232558139,
+      "recall": 0.8600823045267489,
+      "f1": 0.9126637554585153,
+      "support": 243
+    },
+    "meningioma": {
+      "precision": 0.8421052631578947,
+      "recall": 0.7773279352226721,
+      "f1": 0.8084210526315789,
+      "support": 247
+    },
+    "notumor": {
+      "precision": 0.9373040752351097,
+      "recall": 0.9966666666666667,
+      "f1": 0.9660743134087237,
+      "support": 300
+    },
+    "pituitary": {
+      "precision": 0.8904109589041096,
+      "recall": 0.9848484848484849,
+      "f1": 0.935251798561151,
+      "support": 264
+    }
+  }
+}
