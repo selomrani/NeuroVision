@@ -5,3 +5,10 @@ __pycache__/
 
 # Trained model checkpoints (decide later: Git LFS / slim re-save / fetch separately)
 models/
+
+# Scratch area: work in progress, moved aside from the repo proper.
+# Nothing here should ever be committed or pushed.
+TEST/
+
+# IDE / editor
+.idea/
