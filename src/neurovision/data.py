@@ -10,6 +10,7 @@ Covers the brief:
 2. handle corrupt images with try-except
 3. load and shuffle images and labels (same index)
 4. resize with OpenCV to 224x224, 3 channels
+5. keep it all here, and speed it up with tf.data
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import os
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import tensorflow as tf
 
 # One folder per class; the order fixes the label encoding:
 # glioma=0, meningioma=1, notumor=2, pituitary=3
@@ -33,6 +35,8 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".bmp", ".png")
 LABEL_TO_INDEX = {name: index for index, name in enumerate(CLASSES)}
 INDEX_TO_LABEL = {index: name for name, index in LABEL_TO_INDEX.items()}
 NUM_CLASSES = len(CLASSES)
+
+AUTOTUNE = tf.data.AUTOTUNE
 
 
 def list_image_files(root, classes=CLASSES, extensions=IMAGE_EXTENSIONS):
@@ -208,3 +212,145 @@ def show_examples(root, classes=CLASSES, per_class=3, seed=42):
 
     fig.tight_layout()
     plt.show()
+
+
+def decode_image(path, label, size=DEFAULT_SIZE):
+    """tf.data version of load_image: decode and resize inside the graph.
+
+    Used by make_datasets so nothing is held in memory.
+    """
+    raw = tf.io.read_file(path)
+    image = tf.io.decode_image(raw, channels=3, expand_animations=False)
+    image = tf.cast(tf.image.resize(image, size), tf.uint8)
+    return image, label
+
+
+def normalize(image, label):
+    """Scale pixels from [0, 255] to [0, 1]."""
+    return tf.cast(image, tf.float32) / 255.0, label
+
+
+def preprocess_mobilenet(image, label):
+    """Preprocessing expected by MobileNetV2: pixels in [-1, 1].
+
+    MobileNetV2 was trained on ImageNet at this scale. Using [0, 1] instead
+    raises no error but badly degrades results with no warning.
+    """
+    image = tf.keras.applications.mobilenet_v2.preprocess_input(
+        tf.cast(image, tf.float32))
+    return image, label
+
+
+def make_augmentation(rotation=0.03, zoom=0.1, translation=0.1,
+                      horizontal_flip=False, seed=None):
+    """MRI-friendly augmentation: light rotations, zoom, shifts.
+
+    No horizontal flip by default: it swaps left and right, which is
+    anatomical information.
+    """
+    layers = [
+        tf.keras.layers.RandomRotation(rotation, fill_mode="constant", seed=seed),
+        tf.keras.layers.RandomZoom(zoom, fill_mode="constant", seed=seed),
+        tf.keras.layers.RandomTranslation(translation, translation,
+                                          fill_mode="constant", seed=seed),
+    ]
+    if horizontal_flip:
+        layers.append(tf.keras.layers.RandomFlip("horizontal", seed=seed))
+
+    return tf.keras.Sequential(layers, name="mri_augmentation")
+
+
+def build_dataset(paths, labels, size=DEFAULT_SIZE, batch_size=32, shuffle=False,
+                  cache=True, seed=None, augmentation=None,
+                  preprocess="scale01"):
+    """Build a tf.data pipeline from paths and labels.
+
+    Preprocessing is chosen with preprocess:
+      "scale01"   -> pixels in [0, 1]   (CNN from scratch)
+      "mobilenet" -> pixels in [-1, 1]  (MobileNetV2)
+
+    Augmentation only applies when passed, so only on the training set.
+    """
+    dataset = tf.data.Dataset.from_tensor_slices((paths, labels))
+    dataset = dataset.map(lambda p, l: decode_image(p, l, size),
+                          num_parallel_calls=AUTOTUNE)
+
+    if preprocess == "mobilenet":
+        dataset = dataset.map(preprocess_mobilenet, num_parallel_calls=AUTOTUNE)
+    else:
+        dataset = dataset.map(normalize, num_parallel_calls=AUTOTUNE)
+
+    if cache is True:
+        dataset = dataset.cache()
+    elif isinstance(cache, str):
+        dataset = dataset.cache(cache)
+
+    if shuffle:
+        dataset = dataset.shuffle(1000, seed=seed, reshuffle_each_iteration=True)
+
+    if augmentation is not None:
+        dataset = dataset.map(
+            lambda x, y: (augmentation(tf.expand_dims(x, 0), training=True)[0], y),
+            num_parallel_calls=AUTOTUNE)
+
+    return dataset.batch(batch_size).prefetch(AUTOTUNE)
+
+
+def make_datasets(root, classes=CLASSES, size=DEFAULT_SIZE, batch_size=32,
+                  val_split=0.15, test_split=0.15, seed=42, cache=True,
+                  augmentation=None, preprocess="scale01"):
+    """Prepare the train / validation / test sets.
+
+    The split is stratified: each set keeps the same class proportions, and
+    the seed makes it reproducible across runs. Augmentation is applied to
+    training only.
+    """
+    paths, labels, _ = list_image_files(root, classes)
+    splits = split_paths(paths, labels, val_split, test_split, seed)
+
+    datasets = {}
+    for name, (split_paths_, split_labels) in splits.items():
+        if split_paths_ is None:
+            datasets[name] = None
+            continue
+        datasets[name] = build_dataset(
+            split_paths_, split_labels, size=size, batch_size=batch_size,
+            shuffle=(name == "train"), cache=cache, seed=seed,
+            augmentation=augmentation if name == "train" else None,
+            preprocess=preprocess)
+
+    return datasets
+
+
+def split_paths(paths, labels, val_split=0.0, test_split=0.0, seed=42):
+    """Split paths into train / validation / test, stratified (same class
+    proportions in each set).
+    """
+    from sklearn.model_selection import train_test_split
+
+    if not 0 <= val_split + test_split < 1:
+        raise ValueError("val_split + test_split must be in [0, 1)")
+
+    holdout = val_split + test_split
+    if holdout == 0:
+        return {"train": (paths, labels), "val": (None, None),
+                "test": (None, None)}
+
+    train_x, rest_x, train_y, rest_y = train_test_split(
+        paths, labels, test_size=holdout, stratify=labels, random_state=seed)
+
+    splits = {"train": (train_x, train_y), "val": (None, None),
+              "test": (None, None)}
+
+    if val_split and test_split:
+        val_x, test_x, val_y, test_y = train_test_split(
+            rest_x, rest_y, test_size=test_split / holdout,
+            stratify=rest_y, random_state=seed)
+        splits["val"] = (val_x, val_y)
+        splits["test"] = (test_x, test_y)
+    elif val_split:
+        splits["val"] = (rest_x, rest_y)
+    else:
+        splits["test"] = (rest_x, rest_y)
+
+    return splits
