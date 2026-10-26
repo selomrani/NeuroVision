@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 import random
 from pathlib import Path
 
@@ -15,11 +16,15 @@ import streamlit as st
 import tensorflow as tf
 from PIL import Image, ImageOps
 
+ROOT = Path(__file__).resolve().parent
 CLASSES = ("glioma", "meningioma", "notumor", "pituitary")
 DEFAULT_SIZE = (224, 224)
-MODEL_DIR = Path("models")
-ASSETS = Path("assets")
-DATA = Path("Data/raw")
+MODEL = "NeuroVision"
+ALIAS = "champion"
+ASSETS = ROOT / "assets"
+DATA = ROOT / "Data/raw"
+
+os.environ.setdefault("MLFLOW_TRACKING_URI", f"sqlite:///{ROOT / 'mlflow.db'}")
 
 CLASS_COLORS = {
     "glioma": "#fb7185",
@@ -33,10 +38,7 @@ CLASS_INFO = {
     "notumor": "No visible tumour in this slice.",
     "pituitary": "Tumour of the pituitary gland, typically at the skull base.",
 }
-MODEL_CHOICES = {
-    "best_mri_cnn_model.keras": "Best checkpoint — lowest validation loss",
-    "mri_cnn_model3.keras": "Training run 3 — 20 epochs",
-}
+
 
 CSS = """
 <style>
@@ -167,9 +169,20 @@ div[data-baseweb="select"] > div {
 """
 
 
-@st.cache_resource(show_spinner="Loading model…")
-def load_model(name: str) -> tf.keras.Model:
-    return tf.keras.models.load_model(MODEL_DIR / name, compile=False)
+@st.cache_resource(show_spinner="Loading the champion from MLflow…")
+def load_model() -> tf.keras.Model:
+    import mlflow.tensorflow
+    return mlflow.tensorflow.load_model(f"models:/{MODEL}@{ALIAS}")
+
+
+@st.cache_data
+def champion_version() -> str:
+    from mlflow import MlflowClient
+    try:
+        version = MlflowClient().get_model_version_by_alias(MODEL, ALIAS).version
+        return f"serving {MODEL} v{version} · alias `{ALIAS}`"
+    except Exception:
+        return "no champion registered yet"
 
 
 @st.cache_data
@@ -186,10 +199,21 @@ def gallery(cls: str, n: int = 8, seed: int = 42) -> list[str]:
     return random.Random(f"{cls}-{seed}").sample(pool, min(n, len(pool)))
 
 
-def preprocess(image: Image.Image, size: tuple[int, int] = DEFAULT_SIZE) -> np.ndarray:
-    """RGB → model input: 224×224, float32, scaled to [0, 1]."""
+def preprocess(image: Image.Image, model: tf.keras.Model,
+               size: tuple[int, int] = DEFAULT_SIZE) -> np.ndarray:
+    """RGB → the scaling this model was trained with."""
     img = image.convert("RGB").resize(size, Image.BILINEAR)
-    return np.expand_dims(np.asarray(img, dtype=np.float32) / 255.0, axis=0)
+    arr = np.asarray(img, dtype=np.float32)
+    name = model.name.lower()
+    if "mobilenet" in name:
+        arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
+    elif "resnet" in name:
+        arr = tf.keras.applications.resnet50.preprocess_input(arr)
+    elif "vgg" in name:
+        arr = tf.keras.applications.vgg16.preprocess_input(arr)
+    else:
+        arr = arr / 255.0
+    return np.expand_dims(arr, axis=0)
 
 
 def predict(model: tf.keras.Model, batch: np.ndarray) -> np.ndarray:
@@ -258,6 +282,7 @@ st.markdown(
     '<span class="badge">91.1% test accuracy</span>',
     unsafe_allow_html=True,
 )
+st.caption(champion_version())
 st.write("")
 
 metrics = load_metrics()
@@ -323,17 +348,14 @@ with tab_demo:
             )
         else:
             try:
-                model = load_model(
-                    st.session_state.get("model_choice", list(MODEL_CHOICES)[0])
-                )
-            except FileNotFoundError:
-                st.error(
-                    f"Model file missing from `{MODEL_DIR}/`. Add the `.keras` "
-                    "checkpoint and reload."
-                )
+                model = load_model()
+            except Exception as exc:
+                st.error("Could not load the champion from MLflow.\n\n"
+                         f"`models:/{MODEL}@{ALIAS}` → {exc}")
+                st.info("Train a run first: `uv run python -m neurovision.train`")
                 st.stop()
 
-            probs = predict(model, preprocess(image))
+            probs = predict(model, preprocess(image, model))
             top = int(np.argmax(probs))
             label, confidence = CLASSES[top], float(probs[top])
             color = CLASS_COLORS[label]
@@ -440,7 +462,7 @@ with tab_info:
     st.write("")
     st.subheader("Architecture")
     try:
-        model = load_model(list(MODEL_CHOICES)[0])
+        model = load_model()
         rows = []
         for layer in model.layers:
             try:
