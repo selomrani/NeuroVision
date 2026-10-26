@@ -6,7 +6,6 @@ Writes:
 
 Run:  .venv/bin/python scripts/evaluate.py
 """
-
 from __future__ import annotations
 
 import base64
